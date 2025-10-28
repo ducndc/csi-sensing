@@ -1,0 +1,3 @@
+[submodule "collect-csi-data/esp32-csi"]
+	path = collect-csi-data/esp32-csi
+	url = https://github.com/StevenMHernandez/ESP32-CSI-Tool.git
