@@ -1,0 +1,9 @@
+argparse
+pandas
+numpy
+scipy
+path
+PyQt5
+pyqtgraph
+pyserial
+statsmodels
