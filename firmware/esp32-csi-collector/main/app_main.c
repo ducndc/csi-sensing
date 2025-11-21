@@ -6,47 +6,48 @@
    software is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
    CONDITIONS OF ANY KIND, either express or implied.
 */
-#include <stdio.h>
-#include <string.h>
-#include <stdlib.h>
+
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
-
 #include "nvs_flash.h"
-
 #include "esp_mac.h"
 #include "rom/ets_sys.h"
 #include "esp_log.h"
 #include "esp_wifi.h"
 #include "esp_netif.h"
 #include "esp_now.h"
-
 #include "lwip/inet.h"
 #include "lwip/netdb.h"
 #include "lwip/sockets.h"
 #include "ping/ping_sock.h"
-
 #include "protocol_examples_common.h"
 
-#define CONFIG_SEND_FREQUENCY      100
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+
+#define CONFIG_SEND_FREQUENCY       100
+
 #if CONFIG_IDF_TARGET_ESP32C5
-    #define CSI_FORCE_LLTF                      1   
+    #define CSI_FORCE_LLTF          1   
 #endif
-#define CONFIG_FORCE_GAIN                   1
+
+#define CONFIG_FORCE_GAIN           1
 
 #if CONFIG_IDF_TARGET_ESP32S3 || CONFIG_IDF_TARGET_ESP32C3 || CONFIG_IDF_TARGET_ESP32C5 || CONFIG_IDF_TARGET_ESP32C6
-    #define CONFIG_GAIN_CONTROL                 1
+    #define CONFIG_GAIN_CONTROL     1
 #endif
 
 static const char *TAG = "csi_recv_router";
-typedef struct
-{
+
+typedef struct {
     unsigned : 32; /**< reserved */
     unsigned : 32; /**< reserved */
     unsigned : 32; /**< reserved */
     unsigned : 32; /**< reserved */
     unsigned : 32; /**< reserved */
+
 #if CONFIG_IDF_TARGET_ESP32S2
     unsigned : 32; /**< reserved */
 #elif CONFIG_IDF_TARGET_ESP32S3 || CONFIG_IDF_TARGET_ESP32C3 || CONFIG_IDF_TARGET_ESP32C5 ||CONFIG_IDF_TARGET_ESP32C6
@@ -55,7 +56,9 @@ typedef struct
     unsigned agc_gain : 8;
     unsigned : 32; /**< reserved */
 #endif
+
     unsigned : 32; /**< reserved */
+
 #if CONFIG_IDF_TARGET_ESP32S2
       signed : 8;  /**< reserved */
     unsigned : 24; /**< reserved */
@@ -64,6 +67,7 @@ typedef struct
     unsigned : 32; /**< reserved */
     unsigned : 32; /**< reserved */
 #endif
+
     unsigned : 32; /**< reserved */
 } wifi_pkt_rx_ctrl_phy_t;
 
@@ -97,21 +101,25 @@ static void wifi_csi_rx_cb(void *ctx, wifi_csi_info_t *info)
     static int s_count = 0;
     const wifi_pkt_rx_ctrl_t *rx_ctrl = &info->rx_ctrl;
     wifi_pkt_rx_ctrl_phy_t *phy_info = (wifi_pkt_rx_ctrl_phy_t *)info;
+
 #if CONFIG_GAIN_CONTROL
     static uint16_t agc_gain_sum=0; 
     static uint16_t fft_gain_sum=0; 
     static uint8_t agc_gain_force_value=0; 
     static uint8_t fft_gain_force_value=0; 
+
     if (s_count<100) {
         agc_gain_sum += phy_info->agc_gain;
         fft_gain_sum += phy_info->fft_gain;
-    }else if (s_count == 100) {
+    } else if (s_count == 100) {
         agc_gain_force_value = agc_gain_sum/100;
         fft_gain_force_value = fft_gain_sum/100;
-    #if CONFIG_FORCE_GAIN
+
+#if CONFIG_FORCE_GAIN
         phy_fft_scale_force(1,fft_gain_force_value);
         phy_force_rx_gain(1,agc_gain_force_value);
-    #endif
+#endif
+
         ESP_LOGI(TAG,"fft_force %d, agc_force %d",fft_gain_force_value,agc_gain_force_value);
     }
 #endif
@@ -121,15 +129,18 @@ static void wifi_csi_rx_cb(void *ctx, wifi_csi_info_t *info)
         ESP_LOGI(TAG, "================ CSI RECV ================");
         ets_printf("type,seq,mac,rssi,rate,noise_floor,fft_gain,agc_gain,channel,local_timestamp,sig_len,rx_state,len,first_word,data\n");
     }
+
     ets_printf("CSI_DATA,%d," MACSTR ",%d,%d,%d,%d,%d,%d,%d,%d,%d",
             s_count, MAC2STR(info->mac), rx_ctrl->rssi, rx_ctrl->rate,
             rx_ctrl->noise_floor, phy_info->fft_gain, phy_info->agc_gain,rx_ctrl->channel,
             rx_ctrl->timestamp, rx_ctrl->sig_len, rx_ctrl->rx_state);
 #else
+
     if (!s_count) {
         ESP_LOGI(TAG, "================ CSI RECV ================");
         ets_printf("type,id,mac,rssi,rate,sig_mode,mcs,bandwidth,smoothing,not_sounding,aggregation,stbc,fec_coding,sgi,noise_floor,ampdu_cnt,channel,secondary_channel,local_timestamp,ant,sig_len,rx_state,len,first_word,data\n");
     }
+
     ets_printf("CSI_DATA,%d," MACSTR ",%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d",
             s_count, MAC2STR(info->mac), rx_ctrl->rssi, rx_ctrl->rate, rx_ctrl->sig_mode,
             rx_ctrl->mcs, rx_ctrl->cwb, rx_ctrl->smoothing, rx_ctrl->not_sounding,
@@ -140,15 +151,18 @@ static void wifi_csi_rx_cb(void *ctx, wifi_csi_info_t *info)
 
 #if CONFIG_IDF_TARGET_ESP32C5 && CSI_FORCE_LLTF
     ets_printf(",%d,%d,\"[%d", (info->len-2)/2, info->first_word_invalid, (int16_t)(((int16_t)info->buf[1]) << 12)>>4 | (uint8_t)info->buf[0]);
+
     for (int i = 2; i < (info->len-2); i+=2) {
         ets_printf(",%d", (int16_t)(((int16_t)info->buf[i+1]) << 12)>>4 | (uint8_t)info->buf[i]);
     }
 #else
     ets_printf(",%d,%d,\"[%d", info->len, info->first_word_invalid, info->buf[0]);
+
     for (int i = 1; i < info->len; i++) {
         ets_printf(",%d", info->buf[i]);
     }
 #endif
+
     ets_printf("]\"\n");
     s_count++;
 }
@@ -201,6 +215,7 @@ static void wifi_csi_init()
         .shift             = true,
     };
 #endif
+    
     static wifi_ap_record_t s_ap_info = {0};
     ESP_ERROR_CHECK(esp_wifi_sta_get_ap_info(&s_ap_info));
     ESP_ERROR_CHECK(esp_wifi_set_csi_config(&csi_config));
