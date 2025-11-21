@@ -7,12 +7,14 @@ import json
 import argparse
 import numpy as np
 import serial
+import os
 from io import StringIO
 from collections import deque
 from typing import Optional, Tuple, List, Callable
 
 from PyQt5.Qt import *
 from PyQt5.QtCore import pyqtSignal, QThread, QTimer
+from PyQt5.QtWidgets import QFileDialog, QMessageBox, QPushButton, QVBoxLayout, QHBoxLayout
 import pyqtgraph as pg
 from pyqtgraph import PlotWidget, ScatterPlotItem
 
@@ -41,6 +43,7 @@ class CSIDataBuffer:
         self.fft_gain_data = np.zeros([CSI_DATA_INDEX], dtype=np.float64)
         self.fft_gains = deque(maxlen=1000)
         self.agc_gains = deque(maxlen=1000)
+        self.data_source = "live"  # "live" or "file"
     
     def update_buffers(self, csi_complex_data: np.ndarray, agc_gain: float, fft_gain: float):
         """Efficiently update circular buffers"""
@@ -55,6 +58,22 @@ class CSIDataBuffer:
         
         self.fft_gains.append(fft_gain)
         self.agc_gains.append(agc_gain)
+    
+    def load_from_file(self, csi_complex_array: np.ndarray, agc_array: np.ndarray, fft_array: np.ndarray):
+        """Load data from file into buffers"""
+        num_frames = min(len(csi_complex_array), CSI_DATA_INDEX)
+        
+        # Clear existing data
+        self.csi_data_complex.fill(0)
+        self.agc_gain_data.fill(0)
+        self.fft_gain_data.fill(0)
+        
+        # Load new data
+        self.csi_data_complex[-num_frames:] = csi_complex_array[-num_frames:]
+        self.agc_gain_data[-num_frames:] = agc_array[-num_frames:]
+        self.fft_gain_data[-num_frames:] = fft_array[-num_frames:]
+        
+        self.data_source = "file"
 
 csi_buffer = CSIDataBuffer()
 
@@ -87,18 +106,46 @@ class CSIDataGraphicalWindow(QWidget):
         self.setup_plots()
         self.setup_timer()
         self.visible_subcarriers = 0
+        self.current_file_data = None
+        self.current_file_index = 0
 
     def setup_ui(self):
         """Initialize UI components"""
-        self.resize(1280, 900)
+        self.resize(1400, 1000)
         
-        # Tạo layout chính với khả năng resize
+        # Tạo layout chính
         main_layout = QVBoxLayout()
         self.setLayout(main_layout)
         
+        # Tạo control panel
+        control_layout = QHBoxLayout()
+        
+        self.open_file_btn = QPushButton("Open CSV File")
+        self.open_file_btn.clicked.connect(self.open_csv_file)
+        
+        self.play_btn = QPushButton("Play")
+        self.play_btn.clicked.connect(self.toggle_playback)
+        self.play_btn.setEnabled(False)
+        
+        self.prev_btn = QPushButton("Previous Frame")
+        self.prev_btn.clicked.connect(self.previous_frame)
+        self.prev_btn.setEnabled(False)
+        
+        self.next_btn = QPushButton("Next Frame")
+        self.next_btn.clicked.connect(self.next_frame)
+        self.next_btn.setEnabled(False)
+        
+        self.frame_label = QLabel("Frame: 0/0")
+        
+        control_layout.addWidget(self.open_file_btn)
+        control_layout.addWidget(self.play_btn)
+        control_layout.addWidget(self.prev_btn)
+        control_layout.addWidget(self.next_btn)
+        control_layout.addWidget(self.frame_label)
+        control_layout.addStretch()
+        
         # Tạo splitter để có thể điều chỉnh kích thước các plot
         splitter = QSplitter(Qt.Vertical)
-        main_layout.addWidget(splitter)
         
         # Top row: Phase và IQ plots
         top_widget = QWidget()
@@ -124,6 +171,15 @@ class CSIDataGraphicalWindow(QWidget):
         
         # Thiết lập tỷ lệ ban đầu cho splitter
         splitter.setSizes([300, 300, 300])
+        
+        # Thêm tất cả vào main layout
+        main_layout.addLayout(control_layout)
+        main_layout.addWidget(splitter)
+        
+        # Playback timer
+        self.playback_timer = QTimer()
+        self.playback_timer.timeout.connect(self.next_frame)
+        self.playback_speed = 100  # ms per frame
 
     def setup_plots(self):
         """Initialize all plot widgets với cài đặt zoom tốt hơn"""
@@ -136,7 +192,7 @@ class CSIDataGraphicalWindow(QWidget):
         """Setup phase data plot với zoom tốt"""
         self.plotWidget_phase.setYRange(-2*np.pi, 2*np.pi)
         self.plotWidget_phase.addLegend()
-        self.plotWidget_phase.setTitle("Phase Data - Last Frame")
+        self.plotWidget_phase.setTitle("Phase Data - Current Frame")
         self.plotWidget_phase.setLabel('left', 'Phase (rad)')
         self.plotWidget_phase.setLabel('bottom', 'Subcarrier Index')
         
@@ -150,7 +206,7 @@ class CSIDataGraphicalWindow(QWidget):
         self.plotWidget_amplitude.addLegend()
         self.plotWidget_amplitude.setTitle("Subcarrier Amplitude Data")
         self.plotWidget_amplitude.setLabel('left', 'Amplitude')
-        self.plotWidget_amplitude.setLabel('bottom', 'Time (Cumulative Packet Count)')
+        self.plotWidget_amplitude.setLabel('bottom', 'Time (Frame Index)')
         
         # Enable grid and auto range
         self.plotWidget_amplitude.showGrid(x=True, y=True, alpha=0.3)
@@ -176,7 +232,7 @@ class CSIDataGraphicalWindow(QWidget):
         self.plotWidget_phase_time.addLegend()
         self.plotWidget_phase_time.setTitle("Subcarrier Phase Over Time")
         self.plotWidget_phase_time.setLabel('left', 'Phase (rad)')
-        self.plotWidget_phase_time.setLabel('bottom', 'Time (Cumulative Packet Count)')
+        self.plotWidget_phase_time.setLabel('bottom', 'Time (Frame Index)')
         
         # Enable grid and auto range
         self.plotWidget_phase_time.showGrid(x=True, y=True, alpha=0.3)
@@ -193,7 +249,7 @@ class CSIDataGraphicalWindow(QWidget):
         """Setup IQ scatter plot với zoom tốt"""
         self.plotWidget_iq.setLabel('left', 'Q (Imag)')
         self.plotWidget_iq.setLabel('bottom', 'I (Real)')
-        self.plotWidget_iq.setTitle("IQ Plot - Last Frame")
+        self.plotWidget_iq.setTitle("IQ Plot - Current Frame")
         
         # Set initial view range
         view_box = self.plotWidget_iq.getViewBox()
@@ -208,10 +264,157 @@ class CSIDataGraphicalWindow(QWidget):
         self.iq_colors = []
 
     def setup_timer(self):
-        """Setup update timer"""
+        """Setup update timer for live data"""
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_display)
         self.timer.start(100)  # 10 Hz update rate
+
+    def open_csv_file(self):
+        """Open and parse CSV file"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Open CSI Data CSV", "", "CSV Files (*.csv)"
+        )
+        
+        if not file_path:
+            return
+        
+        try:
+            self.load_csv_file(file_path)
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to load CSV file: {str(e)}")
+
+    def load_csv_file(self, file_path: str):
+        """Load and parse CSI data from CSV file"""
+        csi_complex_list = []
+        agc_list = []
+        fft_list = []
+        data_length = None
+        
+        with open(file_path, 'r', encoding='utf-8') as file:
+            csv_reader = csv.reader(file)
+            headers = next(csv_reader)  # Skip header
+            
+            for row_num, row in enumerate(csv_reader):
+                if len(row) < len(DATA_COLUMNS_NAMES):
+                    continue
+                
+                try:
+                    # Parse CSI data
+                    csi_json_data = row[-1]
+                    csi_raw_data = json.loads(csi_json_data)
+                    
+                    # Determine data length from first valid row
+                    if data_length is None:
+                        data_length = len(csi_raw_data)
+                        colors = ColorSchemeGenerator.generate_colors(data_length)
+                        self.update_curve_colors(colors)
+                    
+                    # Convert to complex
+                    csi_complex = np.zeros(CSI_DATA_COLUMNS, dtype=np.complex64)
+                    data_len = len(csi_raw_data) // 2
+                    
+                    for i in range(data_len):
+                        csi_complex[i] = complex(csi_raw_data[i * 2 + 1], csi_raw_data[i * 2])
+                    
+                    # Extract gains
+                    agc_gain = float(row[7])  # AGC gain
+                    fft_gain = float(row[6])  # FFT gain
+                    
+                    csi_complex_list.append(csi_complex)
+                    agc_list.append(agc_gain)
+                    fft_list.append(fft_gain)
+                    
+                except (json.JSONDecodeError, ValueError, IndexError) as e:
+                    print(f"Error parsing row {row_num}: {e}")
+                    continue
+        
+        if not csi_complex_list:
+            QMessageBox.warning(self, "Warning", "No valid CSI data found in the file")
+            return
+        
+        # Convert to numpy arrays
+        csi_complex_array = np.array(csi_complex_list)
+        agc_array = np.array(agc_list)
+        fft_array = np.array(fft_list)
+        
+        # Store file data
+        self.current_file_data = {
+            'csi_complex': csi_complex_array,
+            'agc_gain': agc_array,
+            'fft_gain': fft_array
+        }
+        self.current_file_index = 0
+        
+        # Enable playback controls
+        self.play_btn.setEnabled(True)
+        self.prev_btn.setEnabled(True)
+        self.next_btn.setEnabled(True)
+        
+        # Load first frame
+        self.load_frame_from_file(0)
+        
+        # Update frame label
+        self.update_frame_label()
+        
+        QMessageBox.information(self, "Success", 
+                               f"Loaded {len(csi_complex_list)} frames from file")
+
+    def load_frame_from_file(self, frame_index: int):
+        """Load specific frame from file data into display buffers"""
+        if self.current_file_data is None:
+            return
+        
+        csi_array = self.current_file_data['csi_complex']
+        agc_array = self.current_file_data['agc_gain']
+        fft_array = self.current_file_data['fft_gain']
+        
+        if frame_index < 0 or frame_index >= len(csi_array):
+            return
+        
+        # Load data into buffers
+        csi_buffer.load_from_file(
+            csi_array[:frame_index + 1],
+            agc_array[:frame_index + 1],
+            fft_array[:frame_index + 1]
+        )
+        
+        self.current_file_index = frame_index
+        self.update_frame_label()
+
+    def toggle_playback(self):
+        """Toggle playback of file data"""
+        if self.playback_timer.isActive():
+            self.playback_timer.stop()
+            self.play_btn.setText("Play")
+        else:
+            self.playback_timer.start(self.playback_speed)
+            self.play_btn.setText("Pause")
+
+    def next_frame(self):
+        """Show next frame from file"""
+        if self.current_file_data is None:
+            return
+        
+        next_index = self.current_file_index + 1
+        if next_index < len(self.current_file_data['csi_complex']):
+            self.load_frame_from_file(next_index)
+
+    def previous_frame(self):
+        """Show previous frame from file"""
+        if self.current_file_data is None:
+            return
+        
+        prev_index = self.current_file_index - 1
+        if prev_index >= 0:
+            self.load_frame_from_file(prev_index)
+
+    def update_frame_label(self):
+        """Update frame information label"""
+        if self.current_file_data is None:
+            self.frame_label.setText("Frame: 0/0")
+        else:
+            total_frames = len(self.current_file_data['csi_complex'])
+            self.frame_label.setText(f"Frame: {self.current_file_index + 1}/{total_frames}")
 
     def update_curve_colors(self, color_list: List[Tuple[int, int, int]]):
         """Update colors for subcarrier curves"""
@@ -230,10 +433,12 @@ class CSIDataGraphicalWindow(QWidget):
 
     def update_display(self):
         """Update all display elements"""
-        self.update_iq_plot()
-        self.update_phase_plot()
-        self.update_amplitude_plots()
-        self.update_phase_time_plots()
+        # Only update if we're in live mode or have file data
+        if csi_buffer.data_source == "live" or self.current_file_data is not None:
+            self.update_iq_plot()
+            self.update_phase_plot()
+            self.update_amplitude_plots()
+            self.update_phase_time_plots()
 
     def update_iq_plot(self):
         """Update IQ scatter plot"""
@@ -329,6 +534,8 @@ class ColorSchemeGenerator:
             return (intensity, intensity, 0)
         else:
             return (200, 200, 200)
+
+# ... (Các class CSIReader và CSIThread giữ nguyên từ code trước) ...
 
 class CSIReader:
     """Handle CSI data reading and parsing"""
@@ -533,7 +740,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="Read CSI data from serial port and display it graphically"
     )
-    parser.add_argument('-p', '--port', required=True,
+    parser.add_argument('-p', '--port', required=False,
                         help="Serial port number of csv_recv device")
     parser.add_argument('-s', '--store', default='./csi_data.csv',
                         help="Save the data printed by the serial port to a file")
@@ -545,12 +752,18 @@ def main():
     # Create and run application
     app = QApplication(sys.argv)
     
-    with CSIThread(args.port, args.store, args.log) as csi_thread:
-        window = CSIDataGraphicalWindow()
-        csi_thread.data_ready.connect(window.update_curve_colors)
-        csi_thread.start()
+    window = CSIDataGraphicalWindow()
+    
+    # Only start serial thread if port is specified
+    if args.port:
+        with CSIThread(args.port, args.store, args.log) as csi_thread:
+            csi_thread.data_ready.connect(window.update_curve_colors)
+            csi_thread.start()
+            window.show()
+            sys.exit(app.exec())
+    else:
+        # Run without serial connection (file mode only)
         window.show()
-        
         sys.exit(app.exec())
 
 if __name__ == '__main__':
