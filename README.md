@@ -113,7 +113,7 @@ Includes:
 ### Plot CSI over time
 
 ```bash
-python processing/python/visualize.py --input data/processed/csi_clean.npy
+python examples/python-live-plot/plot_from_csi_serial.py -p <PORT>
 ```
 
 ### Heatmap visualization
