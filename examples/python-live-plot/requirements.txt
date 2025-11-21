@@ -7,3 +7,7 @@ PyQt5
 pyqtgraph
 pyserial
 statsmodels
+numpy
+PyQt5
+serial
+pyqtgraph
