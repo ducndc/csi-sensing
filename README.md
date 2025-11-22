@@ -116,6 +116,13 @@ Includes:
 python examples/python-live-plot/plot_from_csi_serial.py -p <PORT>
 ```
 
+Or
+
+```bash
+cd tools
+python3 esp_csi_tool.py -p <PORT>
+```
+
 ### Heatmap visualization
 
 Supported for:
@@ -155,7 +162,7 @@ python processing/python/model/lstm_model.py --epochs 40
 Plot CSI in realtime:
 
 ```bash
-python examples/python-live-plot/live_plot.py --tcp 3333
+python examples/python-live-plot/live_plot.py -p /dev/ttyACM0
 ```
 
 ---
